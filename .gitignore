@@ -1,0 +1,15 @@
+.venv/
+.venv-kiosk/
+celerybeat-schedule*
+__pycache__/
+.pytest_cache/
+.env
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+.DS_Store
+models/*.onnx
+build/
+dist/
+*.egg-info/
