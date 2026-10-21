@@ -2,6 +2,8 @@
 
 A reference system with a central FastAPI administration portal and a native PySide6 kiosk for macOS and Windows. The kiosk opens directly into scanning. Administrators enroll employees on the web; kiosks periodically synchronize SFace embeddings, recognize locally, persist scans, and send them to the central API. Redis/Celery delivers signed webhooks from a database outbox.
 
+For third-party HR/ERP integrations, see **[the integration API guide](docs/API.md)** or open **API Documentation** in the admin portal. The portal includes copyable cURL examples, an authenticated guide download, a portable Postman collection, and links to the live `/docs` and `/openapi.json` reference. Integrations currently use full administrator sessions (eight-hour expiry); attendance reads return the latest 200 records, so use signed webhooks for continuous capture.
+
 ## Architecture
 
 ```mermaid

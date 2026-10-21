@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session as DBSession
 from backend.db import Attendance, Delivery, Employee, Kiosk, LoginSession, Session, Subscription, User
 from backend.security import digest, hash_password, validate_destination, verify_password
 from shared.vision import MODEL_VERSION
+from backend.integration import GUIDE, postman_collection
 
-app = FastAPI(title='Attendance Control')
+app = FastAPI(
+    title='Attendance Control', version='1.0.0',
+    description='Central attendance API. Admin routes accept an eight-hour bearer session from POST /api/login. '
+                'Kiosk routes require a separately provisioned device token. All timestamps use Unix seconds in UTC.',
+)
 bearer = HTTPBearer()
 vision_lock = threading.Lock()
 vision = None
@@ -75,7 +80,24 @@ def portal():
     return FileResponse(Path(__file__).parent / 'static/index.html')
 
 
-@app.post('/api/login')
+@app.get('/assets/api-reference.js', include_in_schema=False)
+def documentation_script():
+    return FileResponse(Path(__file__).parent / 'static/api-reference.js', media_type='text/javascript')
+
+
+@app.get('/api/admin/documentation/guide', dependencies=[Depends(admin)], include_in_schema=False)
+def integration_guide():
+    return FileResponse(GUIDE, media_type='text/markdown', filename='Attendance-Control-API.md')
+
+
+@app.get('/api/admin/documentation/postman', dependencies=[Depends(admin)], include_in_schema=False)
+def integration_collection():
+    from fastapi.responses import JSONResponse
+    return JSONResponse(postman_collection(app.openapi()),
+                        headers={'Content-Disposition': 'attachment; filename="Attendance-Control.postman_collection.json"'})
+
+
+@app.post('/api/login', tags=['Authentication'], summary='Create an eight-hour administrator session')
 def login(body: Login, s: DBSession = Depends(db)):
     user = s.scalar(select(User).where(User.email == body.email, User.active.is_(True)))
     if not user or not verify_password(body.password, user.password_hash):
@@ -86,19 +108,19 @@ def login(body: Login, s: DBSession = Depends(db)):
     return {'token': token}
 
 
-@app.post('/api/logout')
+@app.post('/api/logout', tags=['Authentication'], summary='Revoke the current administrator session')
 def logout(auth: HTTPAuthorizationCredentials = Depends(bearer), _: User = Depends(admin), s: DBSession = Depends(db)):
     s.delete(s.get(LoginSession, digest(auth.credentials)))
     s.commit()
     return {'ok': True}
 
 
-@app.get('/api/admin/users', dependencies=[Depends(admin)])
+@app.get('/api/admin/users', dependencies=[Depends(admin)], tags=['Administrators'], summary='List administrators')
 def users(s: DBSession = Depends(db)):
     return [{'id': u.id, 'email': u.email, 'active': u.active} for u in s.scalars(select(User))]
 
 
-@app.post('/api/admin/users', dependencies=[Depends(admin)])
+@app.post('/api/admin/users', dependencies=[Depends(admin)], tags=['Administrators'], summary='Create an administrator')
 def create_user(body: NewUser, s: DBSession = Depends(db)):
     if s.scalar(select(User).where(User.email == body.email)):
         raise HTTPException(409, 'Email already exists')
@@ -107,7 +129,7 @@ def create_user(body: NewUser, s: DBSession = Depends(db)):
     return {'id': u.id}
 
 
-@app.patch('/api/admin/users/{user_id}')
+@app.patch('/api/admin/users/{user_id}', tags=['Administrators'], summary='Enable or disable an administrator')
 def toggle_user(user_id: str, active: bool, current: User = Depends(admin), s: DBSession = Depends(db)):
     u = s.get(User, user_id)
     if not u:
@@ -118,13 +140,13 @@ def toggle_user(user_id: str, active: bool, current: User = Depends(admin), s: D
     return {'ok': True}
 
 
-@app.get('/api/admin/employees', dependencies=[Depends(admin)])
+@app.get('/api/admin/employees', dependencies=[Depends(admin)], tags=['Employees'], summary='List employees and face counts')
 def employees(s: DBSession = Depends(db)):
     return [{'id': p.id, 'code': p.code, 'name': p.name, 'active': p.active, 'faces': len(p.embeddings)}
             for p in s.scalars(select(Employee))]
 
 
-@app.post('/api/admin/employees', dependencies=[Depends(admin)])
+@app.post('/api/admin/employees', dependencies=[Depends(admin)], tags=['Employees'], summary='Create an employee')
 def create_person(body: Person, s: DBSession = Depends(db)):
     if s.scalar(select(Employee).where(Employee.code == body.code)):
         raise HTTPException(409, 'Employee code already exists')
@@ -132,7 +154,7 @@ def create_person(body: Person, s: DBSession = Depends(db)):
     return {'id': p.id}
 
 
-@app.patch('/api/admin/employees/{person_id}', dependencies=[Depends(admin)])
+@app.patch('/api/admin/employees/{person_id}', dependencies=[Depends(admin)], tags=['Employees'], summary='Enable or disable an employee')
 def toggle_person(person_id: str, active: bool, s: DBSession = Depends(db)):
     p = s.get(Employee, person_id)
     if not p:
@@ -141,7 +163,7 @@ def toggle_person(person_id: str, active: bool, s: DBSession = Depends(db)):
     return {'ok': True}
 
 
-@app.post('/api/admin/employees/{person_id}/faces', dependencies=[Depends(admin)])
+@app.post('/api/admin/employees/{person_id}/faces', dependencies=[Depends(admin)], tags=['Employees'], summary='Enroll one face image', description='Multipart file, maximum 8 MiB, exactly one face. Keeps the five newest embeddings and does not retain the image.')
 def register_face(person_id: str, file: UploadFile = File(...), s: DBSession = Depends(db)):
     import cv2
     import numpy as np
@@ -169,19 +191,19 @@ def register_face(person_id: str, file: UploadFile = File(...), s: DBSession = D
     return {'faces': len(p.embeddings), 'model_version': MODEL_VERSION}
 
 
-@app.post('/api/admin/kiosks', dependencies=[Depends(admin)])
+@app.post('/api/admin/kiosks', dependencies=[Depends(admin)], tags=['Kiosk management'], summary='Provision a kiosk and return its device token once')
 def create_kiosk(body: Named, s: DBSession = Depends(db)):
     token = secrets.token_urlsafe(32)
     k = Kiosk(name=body.name, token_hash=digest(token)); s.add(k); s.commit()
     return {'id': k.id, 'token': token}
 
 
-@app.get('/api/admin/kiosks', dependencies=[Depends(admin)])
+@app.get('/api/admin/kiosks', dependencies=[Depends(admin)], tags=['Kiosk management'], summary='List kiosks')
 def kiosks(s: DBSession = Depends(db)):
     return [{'id': k.id, 'name': k.name, 'active': k.active} for k in s.scalars(select(Kiosk))]
 
 
-@app.patch('/api/admin/kiosks/{kiosk_id}', dependencies=[Depends(admin)])
+@app.patch('/api/admin/kiosks/{kiosk_id}', dependencies=[Depends(admin)], tags=['Kiosk management'], summary='Enable or revoke a kiosk')
 def toggle_kiosk(kiosk_id: str, active: bool, s: DBSession = Depends(db)):
     k = s.get(Kiosk, kiosk_id)
     if not k:
@@ -190,14 +212,14 @@ def toggle_kiosk(kiosk_id: str, active: bool, s: DBSession = Depends(db)):
     return {'ok': True}
 
 
-@app.get('/api/kiosk/faces')
+@app.get('/api/kiosk/faces', tags=['Trusted kiosk API'], summary='Synchronize active employee embeddings', description='Requires a device token. Returns sensitive biometric embeddings for the trusted recognition kiosk.')
 def sync(_: Kiosk = Depends(device), s: DBSession = Depends(db)):
     return {'model_version': MODEL_VERSION, 'employees': [
         {'id': p.id, 'name': p.name, 'embeddings': p.embeddings}
         for p in s.scalars(select(Employee).where(Employee.active.is_(True)))]}
 
 
-@app.post('/api/kiosk/scans')
+@app.post('/api/kiosk/scans', tags=['Trusted kiosk API'], summary='Record an idempotent kiosk scan', description='Requires a device token. Reuse the event UUID for retries of the same scan. The API trusts the kiosk match.')
 def scan(body: Scan, kiosk: Kiosk = Depends(device), s: DBSession = Depends(db)):
     # Serializes same-device requests; PostgreSQL is required for concurrent production use.
     s.scalar(select(Kiosk).where(Kiosk.id == kiosk.id).with_for_update())
@@ -221,19 +243,19 @@ def scan(body: Scan, kiosk: Kiosk = Depends(device), s: DBSession = Depends(db))
     return {'id': log.id, 'duplicate': False}
 
 
-@app.get('/api/admin/attendance', dependencies=[Depends(admin)])
+@app.get('/api/admin/attendance', dependencies=[Depends(admin)], tags=['Attendance'], summary='Read the latest 200 attendance records', description='Newest received_at first. No filters or pagination. Timestamps are Unix seconds in UTC. Use webhooks for continuous capture.')
 def attendance(s: DBSession = Depends(db)):
     return [{'id': a.id, 'employee_id': a.employee_id, 'kiosk_id': a.kiosk_id, 'captured_at': a.captured_at,
              'received_at': a.received_at, 'confidence': a.confidence}
             for a in s.scalars(select(Attendance).order_by(Attendance.received_at.desc()).limit(200))]
 
 
-@app.get('/api/admin/subscriptions', dependencies=[Depends(admin)])
+@app.get('/api/admin/subscriptions', dependencies=[Depends(admin)], tags=['Webhooks'], summary='List webhook subscribers')
 def subscriptions(s: DBSession = Depends(db)):
     return [{'id': h.id, 'name': h.name, 'url': h.url, 'active': h.active} for h in s.scalars(select(Subscription))]
 
 
-@app.post('/api/admin/subscriptions', dependencies=[Depends(admin)])
+@app.post('/api/admin/subscriptions', dependencies=[Depends(admin)], tags=['Webhooks'], summary='Create a subscriber and return its signing secret once')
 def create_hook(body: Hook, s: DBSession = Depends(db)):
     try:
         validate_destination(body.url)
@@ -243,7 +265,7 @@ def create_hook(body: Hook, s: DBSession = Depends(db)):
     return {'id': h.id, 'secret': h.secret}
 
 
-@app.patch('/api/admin/subscriptions/{hook_id}', dependencies=[Depends(admin)])
+@app.patch('/api/admin/subscriptions/{hook_id}', dependencies=[Depends(admin)], tags=['Webhooks'], summary='Pause or enable a subscriber')
 def toggle_hook(hook_id: str, active: bool, s: DBSession = Depends(db)):
     h = s.get(Subscription, hook_id)
     if not h:
@@ -252,7 +274,7 @@ def toggle_hook(hook_id: str, active: bool, s: DBSession = Depends(db)):
     return {'ok': True}
 
 
-@app.post('/api/admin/subscriptions/{hook_id}/test', dependencies=[Depends(admin)])
+@app.post('/api/admin/subscriptions/{hook_id}/test', dependencies=[Depends(admin)], tags=['Webhooks'], summary='Queue a signed test delivery')
 def test_hook(hook_id: str, s: DBSession = Depends(db)):
     h = s.get(Subscription, hook_id)
     if not h or not h.active:
@@ -262,7 +284,7 @@ def test_hook(hook_id: str, s: DBSession = Depends(db)):
     return {'delivery_id': d.id}
 
 
-@app.get('/api/admin/deliveries', dependencies=[Depends(admin)])
+@app.get('/api/admin/deliveries', dependencies=[Depends(admin)], tags=['Webhooks'], summary='Read the latest 200 delivery states')
 def deliveries(s: DBSession = Depends(db)):
     return [{'id': d.id, 'subscription_id': d.subscription_id, 'state': d.state, 'attempts': d.attempts,
              'last_status': d.last_status, 'last_error': d.last_error, 'next_attempt_at': d.next_attempt_at}

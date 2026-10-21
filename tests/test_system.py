@@ -166,3 +166,57 @@ def test_match_rejects_ambiguous_people():
     assert match(np.array([1., 0.]), people) is None
     assert match(np.array([1., 0.]), people[:1])[1]['id'] == 'one'
     assert match(np.array([0., 1.]), people[:1]) is None
+
+
+def test_documentation_downloads_require_admin_and_collection_matches_routes(system):
+    client, _, _, _ = system
+    for path in ('guide', 'postman'):
+        assert client.get('/api/admin/documentation/' + path).status_code in (401, 403)
+        assert client.get('/api/admin/documentation/' + path, headers={'Authorization': 'Bearer device-token'}).status_code == 401
+    headers = {'Authorization': 'Bearer admin-token'}
+    guide = client.get('/api/admin/documentation/guide', headers=headers)
+    assert guide.status_code == 200
+    assert 'attachment' in guide.headers['content-disposition']
+    assert 'latest **200 records**' in guide.text
+    response = client.get('/api/admin/documentation/postman', headers=headers)
+    assert response.status_code == 200
+    collection = response.json()
+    requests = [item for group in collection['item'] for item in group['item']]
+    actual = {(item['request']['method'], item['name'].split(' ', 1)[1]) for item in requests}
+    schema = client.get('/openapi.json').json()
+    expected = {(method.upper(), path) for path, operations in schema['paths'].items()
+                for method in operations if method in ('get', 'post', 'patch')}
+    assert actual == expected
+    values = {v['key']: v['value'] for v in collection['variable']}
+    assert values['admin_token'] == values['admin_password'] == values['device_token'] == ''
+    login = next(item for item in requests if item['name'] == 'POST /api/login')
+    assert login['request']['auth']['type'] == 'noauth'
+    assert 'admin_token' in login['event'][0]['script']['exec'][0]
+    upload = next(item for item in requests if item['name'].endswith('/{person_id}/faces'))
+    assert '{{employee_id}}' in upload['request']['url']
+    assert upload['request']['body']['formdata'][0]['key'] == 'file'
+    assert client.get('/assets/api-reference.js').status_code == 200
+
+
+def test_documented_employee_and_attendance_integration_flow(system):
+    client, _, _, _ = system
+    login = client.post('/api/login', json={'email': 'admin@example.com', 'password': 'test-password-123'})
+    assert login.status_code == 200
+    headers = {'Authorization': 'Bearer ' + login.json()['token']}
+    response = client.post('/api/admin/employees', headers=headers, json={'code': 'ERP-001', 'name': 'Integration Person'})
+    assert response.status_code == 200
+    person_id = response.json()['id']
+    assert client.post('/api/admin/employees', headers=headers, json={'code': 'ERP-001', 'name': 'Duplicate'}).status_code == 409
+    people = client.get('/api/admin/employees', headers=headers).json()
+    person = next(p for p in people if p['id'] == person_id)
+    assert person == {'id': person_id, 'code': 'ERP-001', 'name': 'Integration Person', 'active': True, 'faces': 0}
+    scan = client.post('/api/kiosk/scans', headers={'Authorization': 'Bearer device-token'}, json={
+        'event_id': str(uuid.uuid4()), 'employee_id': person_id, 'captured_at': time.time(),
+        'confidence': .8, 'model_version': MODEL_VERSION})
+    assert scan.status_code == 200
+    records = client.get('/api/admin/attendance', headers=headers).json()
+    assert len(records) == 1 and records[0]['employee_id'] == person_id
+    assert set(records[0]) == {'id', 'employee_id', 'kiosk_id', 'captured_at', 'received_at', 'confidence'}
+    assert client.patch(f'/api/admin/employees/{person_id}?active=false', headers=headers).json() == {'ok': True}
+    assert client.post('/api/logout', headers=headers).json() == {'ok': True}
+    assert client.get('/api/admin/attendance', headers=headers).status_code == 401
