@@ -173,11 +173,11 @@ class Scanner(QThread):
 
 
 class Window(QMainWindow):
-    def __init__(self, autostart=True):
+    def __init__(self, autostart=True, database=None):
         super().__init__()
         self.setWindowTitle('Attendance Kiosk'); self.resize(1000, 820)
         self.setMinimumSize(720, 680)
-        self.database = data_dir() / 'kiosk.db'
+        self.database = Path(database) if database is not None else data_dir() / 'kiosk.db'
         self.store = Store(self.database)
         self.scanner = self.network = None
         self.pin_failures, self.locked_until = 0, 0
@@ -321,6 +321,14 @@ class Window(QMainWindow):
 
 
 if __name__ == '__main__':
+    if '--smoke-test' in sys.argv:
+        import argparse
+        from kiosk.smoke import run
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--smoke-test', action='store_true')
+        parser.add_argument('--report', required=True)
+        args = parser.parse_args()
+        sys.exit(run(Window, args.report))
     app = QApplication(sys.argv)
     window = Window(); window.show()
     sys.exit(app.exec())

@@ -73,6 +73,8 @@ python scripts/download_models.py
 python -m PyInstaller --clean --noconfirm kiosk/AttendanceKiosk.spec
 ```
 
-Distribute the entire `dist/AttendanceKiosk` folder or wrap it with a Windows installer. Allow camera access in Windows privacy settings, restrict the kiosk data directory ACL, and sign the executable/installer with your organization's signing certificate. The same device provisioning and scan flow applies.
+The Windows spec produces a single `dist/AttendanceKiosk.exe`, with Python, Qt, OpenCV, both face models and sound assets included. Send it with `docs/windows-readme.txt` and third-party notices. Run `python scripts/collect_notices.py` before packaging a distribution to collect the notices under `dist/THIRD-PARTY-NOTICES`. Allow camera access in Windows privacy settings, restrict the kiosk data directory ACL, and sign the executable/installer with your organization's signing certificate. The same device provisioning and scan flow applies.
+
+The **Build Windows kiosk** GitHub Actions workflow builds on a Windows x64 runner and uploads the executable, setup notes, licenses, SHA-256 checksum, dependency versions and a packaged GUI smoke-test report. It runs on relevant pushes to main or can be started manually from Actions. The smoke test uses a temporary database and no camera or network; actual webcam matching and audio output require testing on the recipient's computer. The hosted artifact expires after 30 days, so download it for sharing. A remote kiosk needs a reachable HTTPS backend URL; your Mac's localhost URL cannot be used from your friend's PC.
 
 [PyInstaller official build/signing options](https://www.pyinstaller.org/en/stable/usage.html)

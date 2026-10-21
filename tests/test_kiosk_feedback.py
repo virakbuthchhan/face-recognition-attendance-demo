@@ -81,9 +81,12 @@ def test_success_chime_follows_durable_save_and_respects_cooldown(tmp_path, monk
     scanner = Scanner({}, network, database)
     feedback = []
     def on_feedback(kind):
-        with Store(database).connection as connection:
+        store = Store(database)
+        try:
             # The UI never announces success before the scan exists on disk.
-            assert connection.execute('SELECT COUNT(*) FROM scans').fetchone()[0] == 1
+            assert store.connection.execute('SELECT COUNT(*) FROM scans').fetchone()[0] == 1
+        finally:
+            store.connection.close()
         feedback.append(kind)
     scanner.feedback.connect(on_feedback)
     scanner.run()
