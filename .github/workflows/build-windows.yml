@@ -1,0 +1,74 @@
+name: Build Windows kiosk
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/windows-kiosk-build']
+    paths:
+      - 'kiosk/**'
+      - 'shared/**'
+      - 'backend/security.py'
+      - 'backend/__init__.py'
+      - 'scripts/download_models.py'
+      - 'scripts/collect_notices.py'
+      - 'docs/windows-readme.txt'
+      - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: kiosk/requirements.txt
+      - name: Install kiosk dependencies
+        run: python -m pip install -r kiosk/requirements.txt pytest
+      - name: Test feedback and durable scan behavior
+        run: python -m pytest -q tests/test_kiosk_feedback.py
+      - name: Download and verify official face models
+        run: python scripts/download_models.py
+      - name: Collect third-party license notices
+        run: python scripts/collect_notices.py
+      - name: Build self-contained Windows executable
+        run: python -m PyInstaller --clean --noconfirm kiosk/AttendanceKiosk.spec
+      - name: Check packaged app starts and loads its models
+        shell: pwsh
+        run: |
+          $report = Join-Path $PWD 'dist/windows-smoke.json'
+          $process = Start-Process -FilePath 'dist/AttendanceKiosk.exe' -ArgumentList @('--smoke-test', '--report', $report) -PassThru
+          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Packaged GUI test timed out' }
+          if ($process.ExitCode -ne 0) { throw "Packaged GUI exited with $($process.ExitCode)" }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if (-not $result.ok -or -not $result.frozen) { throw 'Packaged GUI check failed' }
+          Get-Content $report
+      - name: Prepare sharing package
+        shell: pwsh
+        run: |
+          Copy-Item docs/windows-readme.txt dist/README-WINDOWS.txt
+          $checksum = (Get-FileHash dist/AttendanceKiosk.exe -Algorithm SHA256).Hash.ToLower()
+          "$checksum  AttendanceKiosk.exe" | Set-Content dist/SHA256SUMS.txt
+          python -m pip freeze | Set-Content dist/build-dependencies.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: AttendanceKiosk-Windows-x64
+          path: |
+            dist/AttendanceKiosk.exe
+            dist/README-WINDOWS.txt
+            dist/SHA256SUMS.txt
+            dist/windows-smoke.json
+            dist/windows-smoke.png
+            dist/build-dependencies.txt
+            dist/THIRD-PARTY-NOTICES/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
